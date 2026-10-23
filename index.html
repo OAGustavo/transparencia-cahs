@@ -831,6 +831,7 @@ footer.site-footer{display:block;width:100%;margin:52px 0 0;padding:0;background
     <p class="update-status" title="Referência: data da última movimentação registrada na base. Não há horário individual nos lançamentos e os dados não são sincronizados automaticamente.">
       <span class="update-dot" aria-hidden="true"></span><time id="last-update">Última movimentação registrada há 1 dia</time></p>
     <small id="coverage"></small>
+    <small id="sync-status" style="display:block;margin-top:6px;font-size:11px;color:#625a40" aria-live="polite"></small>
   </div>
   <div class="hero-intro">
     <div class="hero-intro-copy">
@@ -1104,7 +1105,7 @@ const currentCashAllocation=[
  {label:'Rendimento em poupança', detail:'Mercado Pago · poupança', value:350000, color:'#6fbe88'},
  {label:'Fundo de investimento', detail:'Mercado Pago · Nikos Potencial FIA', value:250000, color:'#d98993'}
 ];
-const currentCashTotal=currentCashAllocation.reduce((sum,item)=>sum+item.value,0);
+let currentCashTotal=currentCashAllocation.reduce((sum,item)=>sum+item.value,0);
 function syncGroupFilterNote(){
  const note=$('group-filter-note');if(!note)return;
  note.hidden=!groupFilter;
@@ -1900,7 +1901,44 @@ function balSetup(){
  $('balancete-create').addEventListener('click',balGenerateSlidesReference);
 }
 
-async function init(){try{records=JSON.parse($('cahs-data').textContent);records.sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id);updateRelativeTime();$('coverage').textContent=records.length?'Registros de '+date(records[0].date)+' a '+date(records.at(-1).date):'Sem lançamentos';animateCash(currentCashTotal);document.querySelectorAll('[data-chart]').forEach(b=>b.onclick=()=>{chartMode=b.dataset.chart;document.querySelectorAll('[data-chart]').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b));});render();});for(const key of ['category','object'])[...new Set(records.map(r=>r[key]))].sort().forEach(v=>{$(key).add(new Option(key==='object'?publicLabel(v):v,v));});$('columnoptions').innerHTML=columns.map(([k,n])=>`<label><input type="checkbox" data-col="${k}" checked>${n}</label>`).join('');document.querySelectorAll('[data-col]').forEach(c=>c.onchange=()=>{if(!c.checked&&visible.size===1){c.checked=true;return;}c.checked?visible.add(c.dataset.col):visible.delete(c.dataset.col);renderTable();});document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>selectTab(b.dataset.tab));document.querySelectorAll('[data-goto]').forEach(b=>b.onclick=()=>selectTab(b.dataset.goto));for(const id of ['from','to','category','object','type','search'])$(id).addEventListener('input',()=>{groupFilter=null;page=0;render();});$('reset').onclick=()=>{for(const id of ['from','to','category','object','type','search'])$(id).value='';groupFilter=null;page=0;render();};$('prev').onclick=()=>{page--;renderTable();};$('next').onclick=()=>{page++;renderTable();};$('csv').onclick=exportCsv;$('print').onclick=()=>{renderTable(true);window.print();};balSetup();window.addEventListener('afterprint',()=>renderTable());$('pointslider').oninput=showPoint;$('methodology').onclick=()=>$('about').showModal();$('closeabout').onclick=()=>$('about').close();setupMonthlyScroll();render();setupBlockMotion();}catch(e){$('metrics').innerHTML='<p class="empty">Não foi possível carregar a base. Recarregue a página para tentar novamente.</p>';console.error(e);}}
+// Dados financeiros públicos: JSON externo, com fallback para a versão incorporada.
+async function carregarMovimentacoesPublicas(){
+ const reserva=JSON.parse($('cahs-data').textContent);
+ const status=$('sync-status');
+ try{
+  const resposta=await fetch('./movimentacoes.json',{cache:'no-store'});
+  if(!resposta.ok)throw new Error('HTTP '+resposta.status);
+  const pacote=await resposta.json();
+  const dados=Array.isArray(pacote)?pacote:pacote.records;
+  if(!Array.isArray(dados)||dados.length<Math.min(15,reserva.length))throw new Error('Dados públicos ausentes ou incompletos');
+  const ids=new Set();
+  for(const r of dados){
+   if(!Number.isInteger(r.id)||ids.has(r.id)||!['Entrada','Gasto'].includes(r.type)||
+      !/^\d{4}-\d{2}-\d{2}$/.test(r.date)||!Number.isInteger(r.value)||r.value<0||
+      typeof r.description!=='string'||typeof r.category!=='string'||typeof r.object!=='string')
+     throw new Error('Registro público inválido');
+   ids.add(r.id);
+  }
+  if(pacote&&Array.isArray(pacote.caixa)&&pacote.caixa.length===currentCashAllocation.length&&
+     pacote.caixa.every(x=>Number.isInteger(x.value)&&x.value>=0)){
+   pacote.caixa.forEach((c,i)=>{currentCashAllocation[i].value=c.value;});
+   currentCashTotal=currentCashAllocation.reduce((n,x)=>n+x.value,0);
+  }
+  if(status){
+   if(pacote.updatedAt&&!Number.isNaN(Date.parse(pacote.updatedAt))){
+    const quando=new Date(pacote.updatedAt).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',dateStyle:'short',timeStyle:'short'});
+    status.textContent='Sincronização da planilha: '+quando;
+   }else status.textContent='Base pública disponível; sincronização automática aguardando configuração';
+  }
+  return dados;
+ }catch(erro){
+  console.warn('O portal continuará com a última base incorporada.',erro);
+  if(status)status.textContent='Base incorporada no site · sincronização automática indisponível';
+  return reserva;
+ }
+}
+
+async function init(){try{records=await carregarMovimentacoesPublicas();records.sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id);updateRelativeTime();$('coverage').textContent=records.length?'Registros de '+date(records[0].date)+' a '+date(records.at(-1).date):'Sem lançamentos';animateCash(currentCashTotal);document.querySelectorAll('[data-chart]').forEach(b=>b.onclick=()=>{chartMode=b.dataset.chart;document.querySelectorAll('[data-chart]').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b));});render();});for(const key of ['category','object'])[...new Set(records.map(r=>r[key]))].sort().forEach(v=>{$(key).add(new Option(key==='object'?publicLabel(v):v,v));});$('columnoptions').innerHTML=columns.map(([k,n])=>`<label><input type="checkbox" data-col="${k}" checked>${n}</label>`).join('');document.querySelectorAll('[data-col]').forEach(c=>c.onchange=()=>{if(!c.checked&&visible.size===1){c.checked=true;return;}c.checked?visible.add(c.dataset.col):visible.delete(c.dataset.col);renderTable();});document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>selectTab(b.dataset.tab));document.querySelectorAll('[data-goto]').forEach(b=>b.onclick=()=>selectTab(b.dataset.goto));for(const id of ['from','to','category','object','type','search'])$(id).addEventListener('input',()=>{groupFilter=null;page=0;render();});$('reset').onclick=()=>{for(const id of ['from','to','category','object','type','search'])$(id).value='';groupFilter=null;page=0;render();};$('prev').onclick=()=>{page--;renderTable();};$('next').onclick=()=>{page++;renderTable();};$('csv').onclick=exportCsv;$('print').onclick=()=>{renderTable(true);window.print();};balSetup();window.addEventListener('afterprint',()=>renderTable());$('pointslider').oninput=showPoint;$('methodology').onclick=()=>$('about').showModal();$('closeabout').onclick=()=>$('about').close();setupMonthlyScroll();render();setupBlockMotion();}catch(e){$('metrics').innerHTML='<p class="empty">Não foi possível carregar a base. Recarregue a página para tentar novamente.</p>';console.error(e);}}
 document.querySelectorAll('.site-menu a').forEach(a=>a.addEventListener('click',()=>{$('site-menu').open=false;}));
 document.addEventListener('keydown',e=>{if(e.key==='Escape')$('site-menu').open=false;});
 document.addEventListener('click',e=>{if(!$('site-menu').contains(e.target))$('site-menu').open=false;});
